@@ -2,6 +2,7 @@ use solana_program::{
     rent::Rent,
     sysvar::Sysvar,
     pubkey::Pubkey,
+    system_program,
     system_instruction,
     instruction::Instruction,
     entrypoint::ProgramResult,
@@ -117,7 +118,7 @@ impl Processor {
             .checked_add(locked_amount)
             .ok_or(ProgramError::ArithmeticOverflow)?;
 
-        EscrowInstruction::close_account(payer_account, escrow_account, rent_exemp)?;
+        Self::_process_close_escrow(payer_account, escrow_account, rent_exemp)?;
 
         Ok(())
     }
@@ -151,6 +152,28 @@ impl Processor {
         // 3. close `EscrowAccount`
         let total_amount: u64 = escrow_account.lamports();
 
-        EscrowInstruction::close_account(payer_account, escrow_account, total_amount)
+        Self::_process_close_escrow(payer_account, escrow_account, total_amount)
+    }
+
+    /// This method does the following:
+    /// 
+    /// * Sets `escrow_account.lamports` to 0, transfering them to the `payer`.
+    /// * Assigns ownership of `escrow_account` to the `SystemProgram`.
+    /// * Reallocates space in `escrow_account`, zeroing the data.
+    fn _process_close_escrow(
+        payer_account: &AccountInfo,
+        escrow_account: &AccountInfo,
+        lamports: u64
+    ) -> ProgramResult {
+        **payer_account.lamports.borrow_mut() = payer_account.lamports()
+            .checked_add(lamports)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+        **escrow_account.lamports.borrow_mut() = 0;
+
+        escrow_account.assign(&system_program::ID);
+        
+        escrow_account.realloc(0, true)?;
+
+        Ok(())
     }
 }
