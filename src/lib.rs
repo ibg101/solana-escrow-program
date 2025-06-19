@@ -3,8 +3,40 @@ pub mod processor;
 pub mod entrypoint;
 pub mod instruction;
 
+use solana_program::{
+    declare_id,
+    pubkey::Pubkey,
+    program_error::ProgramError
+};
 
-solana_program::declare_id!("E6v3tbZyZAthzd5JCPJgd3TmLXL3VirKxib9XHjyKTjL");
+declare_id!("E6v3tbZyZAthzd5JCPJgd3TmLXL3VirKxib9XHjyKTjL");
+
+pub fn get_escrow_seeds<'a>(payer_pkey: &'a Pubkey, recipient_pkey: &'a Pubkey) -> (&'a [u8], &'a [u8], &'a [u8]) {
+    (
+        b"escrow",
+        payer_pkey.as_ref(),
+        recipient_pkey.as_ref()
+    )
+}
+
+pub fn check_provided_pda(
+    payer_pkey: &Pubkey, 
+    recipient_pkey: &Pubkey,
+    escrow_pda: &Pubkey,
+    bump: u8
+) -> Result<(), ProgramError> {
+    let (seed1, seed2, seed3) = get_escrow_seeds(payer_pkey, recipient_pkey);
+    let expected_pda: Pubkey = Pubkey::create_program_address(
+        &[seed1, seed2, seed3, &[bump]], 
+        &crate::ID
+    )?;
+
+    if escrow_pda != &expected_pda {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -84,6 +116,47 @@ mod tests {
         // 3.2 sign complete escrow tx & send it
         complete_escrow_tx.sign(&[&payer], latest_blockhash);
         banks_client.process_transaction(complete_escrow_tx).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn init_and_close_escrow_instructions() -> Result<(), Box<dyn std::error::Error>> {
+        let program_test: ProgramTest = ProgramTest::new(
+            "escrow",
+            crate::ID,
+            processor!(super::entrypoint::process_instruction)
+        );
+    
+        // 1.1 init Client, payer, get latest blockhash
+        let (banks_client, payer, latest_blockhash) = program_test.start().await;
+        let payer_pkey: Pubkey = payer.pubkey();
+
+        // 1.2 init recipient & derive escrow PDA 
+        let recipient: Keypair = Keypair::new(); 
+        let recipient_pkey: Pubkey = recipient.pubkey();
+
+        let (escrow_pda, _bump) = derive_escrow_pda(&payer_pkey, &recipient_pkey);
+
+        // 2. init escrow
+        init_escrow(&banks_client, &payer, &payer_pkey, &recipient_pkey, &escrow_pda, latest_blockhash).await?;
+
+        // 3. close escrow
+        let close_escrow_ix: Instruction = Instruction::new_with_bytes(
+            crate::ID, 
+            &[2], 
+            vec![
+                AccountMeta::new(payer_pkey, true),
+                AccountMeta::new_readonly(recipient_pkey, false),
+                AccountMeta::new(escrow_pda, false)
+            ]
+        );
+        let message: Message = Message::new(&[close_escrow_ix], Some(&payer_pkey));
+        let mut close_escrow_tx: Transaction = Transaction::new_unsigned(message);
+
+        // 3.2 sign complete escrow tx & send it
+        close_escrow_tx.sign(&[&payer], latest_blockhash);
+        banks_client.process_transaction(close_escrow_tx).await?;
 
         Ok(())
     }

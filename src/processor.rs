@@ -25,7 +25,7 @@ impl Processor {
         match instruction {
             EscrowInstruction::Initialize { amount } => Self::process_initialize_escrow(program_id, accounts, amount)?,
             EscrowInstruction::Complete => Self::process_complete_escrow(program_id, accounts)?,
-            EscrowInstruction::Close => todo!()      // todo add close
+            EscrowInstruction::Close => Self::process_close_escrow(program_id, accounts)?
         };
 
         Ok(())
@@ -45,11 +45,7 @@ impl Processor {
         let escrow_account: &AccountInfo = next_account_info(accounts_iter)?;  // pda
         let system_program_account: &AccountInfo = next_account_info(accounts_iter)?;
         
-        let (seed1, seed2, seed3) = (
-            b"escrow",
-            payer_account.key.as_ref(),
-            recipient_account.key.as_ref()
-        );
+        let (seed1, seed2, seed3) = crate::get_escrow_seeds(payer_account.key, recipient_account.key);
         let (expected_pda, bump) = Pubkey::find_program_address(
             &[seed1, seed2, seed3],
             program_id
@@ -100,32 +96,61 @@ impl Processor {
         }
 
         // 1. unpack EscrowAccount (check if it's initialized & extract bump)
-        let escrow_data: &[u8] = &**escrow_account.data.borrow(); 
-        let escrow_instance: EscrowAccount = EscrowAccount::unpack(escrow_data)?;
-        
+        let escrow_data = escrow_account.data.borrow(); 
+        let escrow_instance: EscrowAccount = EscrowAccount::unpack(&**escrow_data)?;
+        std::mem::drop(escrow_data);  // explicitly dropping ref, because we call escrow_account.data.borrow_mut() in close_account()
+
         // 2. create `expected_pda` and check the match with provided pda
-        let expected_pda: Pubkey = Pubkey::create_program_address(
-            &[
-                b"escrow",
-                payer_account.key.as_ref(),
-                recipient_account.key.as_ref(),
-                &[escrow_instance.bump]
-            ], 
-            &crate::ID
+        crate::check_provided_pda(
+            payer_account.key,
+            recipient_account.key,
+            escrow_account.key,
+            escrow_instance.bump
         )?;
 
-        if escrow_account.key != &expected_pda {
-            return Err(ProgramError::InvalidInstructionData);
-        }
-
+        // 3. transfer locked lamports in the contract to the recipient & close `EscrowAccount`.
+        // Note, that we MUST NOT subtract the balance of `EscrowAccount`, because `EscrowInstruction::close()` already handles it.
         let rent_exemp: u64 = Rent::get()?.minimum_balance(EscrowAccount::LEN);
-        let vault_balance: u64 = escrow_account.lamports() - rent_exemp;
+        let locked_amount: u64 = escrow_account.lamports() - rent_exemp;
 
         **recipient_account.lamports.borrow_mut() = recipient_account.lamports()
-            .checked_add(vault_balance)
+            .checked_add(locked_amount)
             .ok_or(ProgramError::ArithmeticOverflow)?;
-        **escrow_account.lamports.borrow_mut() -= vault_balance;
+
+        EscrowInstruction::close_account(payer_account, escrow_account, rent_exemp)?;
 
         Ok(())
+    }
+
+    fn process_close_escrow(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+        let accounts_iter = &mut accounts.iter();
+
+        let payer_account: &AccountInfo = next_account_info(accounts_iter)?;
+        // this field is only used for pda check, namely `recipient_account.key`. 
+        // (we could teoretically store `recipient_pkey` in the `escrow_account.data`, but since it's used only here, it's an overkill)
+        let recipient_account: &AccountInfo = next_account_info(accounts_iter)?;
+        let escrow_account: &AccountInfo = next_account_info(accounts_iter)?;
+
+        if escrow_account.owner != program_id {
+            return Err(ProgramError::IncorrectProgramId);
+        }
+
+        // 1. unpack EscrowAccount (check if it's initialized & extract bump)
+        let escrow_data = escrow_account.data.borrow();
+        let escrow_instance: EscrowAccount = EscrowAccount::unpack(&**escrow_data)?;
+        std::mem::drop(escrow_data);  // explicitly dropping ref, because we call escrow_account.data.borrow_mut() in close_account()
+        
+        // 2. create `expected_pda` and check the match with provided pda
+        crate::check_provided_pda(
+            payer_account.key,
+            recipient_account.key,
+            escrow_account.key,
+            escrow_instance.bump
+        )?;
+
+        // 3. close `EscrowAccount`
+        let total_amount: u64 = escrow_account.lamports();
+
+        EscrowInstruction::close_account(payer_account, escrow_account, total_amount)
     }
 }

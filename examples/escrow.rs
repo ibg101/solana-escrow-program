@@ -60,22 +60,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     initialize_escrow_tx.sign(&[&payer.keypair], latest_blockhash);
     send_tx_and_print_result(&rpc_client, &initialize_escrow_tx).await?;
 
-    // 6. craft complete ix & complete tx
-    let complete_escrow_ix: Instruction = Instruction::new_with_bytes(
+    // // 6. craft complete ix & complete tx
+    // let complete_escrow_ix: Instruction = Instruction::new_with_bytes(
+    //     escrow::ID, 
+    //     &[1], 
+    //     vec![
+    //         AccountMeta::new(payer.pkey, true),
+    //         AccountMeta::new(recipient.pkey, false),
+    //         AccountMeta::new(escrow_pda, false)
+    //     ]
+    // );
+    // let message: Message = Message::new(&[complete_escrow_ix], Some(&payer.pkey));
+    // let mut complete_escrow_tx: Transaction = Transaction::new_unsigned(message);
+
+    // // 7. sign complete tx & send it
+    // complete_escrow_tx.sign(&[&payer.keypair], latest_blockhash);
+    // send_tx_and_print_result(&rpc_client, &complete_escrow_tx).await?;
+
+    // this is an alternative way: 
+    // (either complete escrow, or close it. note, that complete escrow also closes EscrowAccount at the end,
+    // so we can freely ignore testing this instruction, since they both use the same `EscrowInstruction::close_account()` method)
+    // 6. craft close ix & close ix
+    let close_escrow_ix: Instruction = Instruction::new_with_bytes(
         escrow::ID, 
-        &[1], 
+        &[2], 
         vec![
             AccountMeta::new(payer.pkey, true),
-            AccountMeta::new(recipient.pkey, false),
+            AccountMeta::new_readonly(recipient.pkey, false),
             AccountMeta::new(escrow_pda, false)
         ]
     );
-    let message: Message = Message::new(&[complete_escrow_ix], Some(&payer.pkey));
-    let mut complete_escrow_tx: Transaction = Transaction::new_unsigned(message);
+    let message: Message = Message::new(&[close_escrow_ix], Some(&payer.pkey));
+    let mut close_escrow_tx: Transaction = Transaction::new_unsigned(message);
 
-    // 7. sign complete tx & send it
-    complete_escrow_tx.sign(&[&payer.keypair], latest_blockhash);
-    send_tx_and_print_result(&rpc_client, &complete_escrow_tx).await?;
+    // 7. sign close tx & send it
+    close_escrow_tx.sign(&[&payer.keypair], latest_blockhash);
+    send_tx_and_print_result(&rpc_client, &close_escrow_tx).await?;
 
     Ok(())
 }
